@@ -1,5 +1,6 @@
 ---
-description: Process the capture inbox by turning each quick note into a calendar event, task, reply, note, or delete. Proposes first.
+name: triage-inbox
+description: "Process the flow-kit capture inbox, turning each quick note into a calendar event, task, email draft, reading summary, note, or drop, with approval before acting. Use when the user asks to triage/process/clear their inbox of captured notes or 'go through my captures'."
 ---
 
 Triage my capture inbox.

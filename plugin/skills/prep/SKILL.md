@@ -1,5 +1,6 @@
 ---
-description: One-page brief for your next meeting, interview or coffee chat, covering who they are, your history, and what to say.
+name: prep
+description: "One-page brief for an upcoming meeting, interview or coffee chat: who they are, email history, talking points, sharp questions, watch-outs. Use when the user asks to prep for a meeting/interview/call, 'who am I meeting', or names an upcoming meeting or person to prepare for."
 argument-hint: "[meeting name, person, or company; default: next meeting with an outside attendee]"
 ---
 

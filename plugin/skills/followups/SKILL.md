@@ -1,5 +1,6 @@
 ---
-description: Find sent emails that never got a reply and draft polite follow-ups. Drafts only, never sends.
+name: followups
+description: "Find sent emails that never got a reply and draft polite in-thread follow-ups, ranked interviews > recruiters > professors. Use when the user asks who hasn't replied, what they're waiting on, to chase or nudge people, or about recruiter follow-ups. Drafts only, never sends."
 argument-hint: "[days, default 5] [filter, e.g. 'recruiters']"
 ---
 

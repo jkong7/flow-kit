@@ -1,5 +1,6 @@
 ---
-description: Sunday review of what you shipped, what slipped, where the time went, and the top 3 for next week.
+name: weekly-review
+description: "Weekly review: wins, what slipped, hours by area, open loops, next week's top 3, one experiment, from calendar, focus log, email, inbox and git. Use when the user asks for a weekly review, 'how did my week go', a retro, or Sunday planning."
 argument-hint: "[week offset, e.g. 'last week']"
 ---
 

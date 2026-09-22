@@ -13,7 +13,7 @@ hyper+A   ask Claude anything                     hyper+X   stop it
 
 | Piece | What it is | Where |
 | --- | --- | --- |
-| **Claude Code plugin** | Hooks: done/permission chimes, a Bash guard, auto-format. Also 7 slash commands and a statusline. | [`plugin/`](plugin) |
+| **Claude Code plugin** | Hooks: done/permission chimes, a Bash guard, auto-format. Also 6 skills, a `/push` command, and a statusline. | [`plugin/`](plugin) |
 | **`ask`** | Pipe any text through Claude with a preset. Can replace the selection in place. | [`bin/ask`](bin/ask) |
 | **`capture`** | One-keystroke inbox (a markdown checklist) for thoughts, links and tabs | [`bin/capture`](bin/capture) |
 | **`flow`** | One command to start a focus session: Raycast Focus, DND, Spotify, apps, timer, time log | [`bin/flow`](bin/flow) |
@@ -83,11 +83,11 @@ Requirements: macOS, Python 3.9+ (the system `python3` is fine), and the [Claude
 
 It runs silently, costs no tokens, and never blocks. Turn it off with `FLOWKIT_FORMAT_OFF=1`.
 
-### Slash commands
+### Skills
 
-All of these use whatever connectors you have (Gmail, Google Calendar, Notion, web). They're **draft-only**: they propose, you approve, and they never send.
+These run when you ask in plain words ("what's on today?", "who hasn't replied to me?", "prep me for my 3pm") or when you type the slash name. They use whatever connectors you have (Gmail, Google Calendar, Notion, web). They're **draft-only**: they propose, you approve, and they never send.
 
-| Command | Does |
+| Skill | Does |
 | --- | --- |
 | `/today [focus]` | Morning brief: top 3, today's schedule with free blocks, threads that need a reply (with drafts), 72-hour deadlines, inbox count |
 | `/plan-day [must-dos]` | Time-boxes the rest of today around your meetings. Asks for approval, then writes `▢ task` blocks to your calendar and offers to start `flow`. |
@@ -95,6 +95,11 @@ All of these use whatever connectors you have (Gmail, Google Calendar, Notion, w
 | `/prep [meeting]` | One-page brief: who they are, your email history, talking points, sharp questions, watch-outs |
 | `/weekly-review` | Wins, what slipped, hours by area, open loops, next week's top 3, one experiment. Pulls from calendar, `flow log`, mail, the inbox and git. |
 | `/triage-inbox` | Turns each `capture` item into an event, task, reply, read, note or drop. You approve, it carries them out, then checks them off. |
+
+`/push` stays a slash command so that committing and pushing only happens when you ask for it:
+
+| Command | Does |
+| --- | --- |
 | `/push [context]` | Stage, write the commit message, push, and open or update a PR. Won't commit secrets. Asks before committing to the default branch. |
 
 ### Statusline

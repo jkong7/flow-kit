@@ -1,5 +1,6 @@
 ---
-description: Morning brief from calendar, email, tasks and your capture inbox. Read-only; drafts, never sends.
+name: today
+description: "Morning brief from calendar, email, tasks and the capture inbox: top 3, schedule with free blocks, threads needing a reply (with drafts), 72h deadlines. Use when the user asks what's on today, for a morning/daily brief, 'what do I have going on', or 'catch me up'. Read-only; drafts, never sends."
 argument-hint: "[focus area, e.g. 'job search']"
 ---
 

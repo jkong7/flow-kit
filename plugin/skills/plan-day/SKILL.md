@@ -1,5 +1,6 @@
 ---
-description: Time-box the rest of today into calendar blocks around your meetings. Proposes first; writes only after you approve.
+name: plan-day
+description: "Time-box the rest of today into calendar blocks around existing meetings. Use when the user asks to plan their day, schedule their tasks, time-block, or 'when should I do X today'. Proposes first; writes calendar blocks only after approval."
 argument-hint: "[what must get done today]"
 ---
 
