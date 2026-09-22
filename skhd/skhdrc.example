@@ -1,0 +1,12 @@
+hyper - f : "$HOME/dev/flow-kit/bin/ask" fix --selection --paste --no-copy
+hyper - r : open -g "raycast://script-commands/rewrite-selection"
+hyper - e : open -g "raycast://script-commands/explain-selection"
+hyper - a : open -g "raycast://script-commands/ask-claude"
+hyper - v : open -g "raycast://script-commands/summarize-clipboard"
+hyper - d : open -g "raycast://script-commands/draft-reply"
+hyper - c : open -g "raycast://script-commands/quick-capture"
+hyper - b : "$HOME/dev/flow-kit/bin/capture" --tab
+hyper - i : "$HOME/dev/flow-kit/bin/capture" --open
+hyper - s : open -g "raycast://script-commands/flow-start"
+hyper - x : "$HOME/dev/flow-kit/bin/flow" stop
+hyper - space : open -g "raycast://extensions/raycast/raycast-ai/ai-chat"
