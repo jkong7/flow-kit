@@ -1,0 +1,15 @@
+{
+  "name": "flow-kit",
+  "description": "Flow-state automations for Claude Code, Raycast and the macOS keyboard.",
+  "owner": {
+    "name": "Jonathan Kong",
+    "url": "https://github.com/jkong7"
+  },
+  "plugins": [
+    {
+      "name": "flow-kit",
+      "source": "./plugin",
+      "description": "Flow-state helpers for Claude Code: notifications, guardrails, auto-format, and daily-driver slash commands."
+    }
+  ]
+}
