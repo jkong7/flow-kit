@@ -1,0 +1,306 @@
+#!/usr/bin/env python3
+import argparse
+import datetime
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+import urllib.parse
+
+DEFAULTS = {
+    "default_minutes": 50,
+    "default_goal": "Deep work",
+    "raycast_focus": True,
+    "raycast_categories": [],
+    "raycast_mode": "block",
+    "focus_on_shortcut": "",
+    "focus_off_shortcut": "",
+    "spotify_playlist": "",
+    "spotify_pause_on_stop": True,
+    "open_apps": [],
+    "open_urls": [],
+    "end_sound": "Glass",
+    "break_minutes": 10,
+}
+
+DRY = os.environ.get("FLOWKIT_DRY_RUN") == "1"
+
+
+def config_dir():
+    return os.environ.get("FLOWKIT_CONFIG_DIR") or os.path.expanduser("~/.config/flowkit")
+
+
+def state_dir():
+    return os.environ.get("FLOWKIT_STATE_DIR") or os.path.expanduser("~/.local/state/flowkit")
+
+
+def config_path():
+    return os.path.join(config_dir(), "flow.json")
+
+
+def load_config():
+    cfg = dict(DEFAULTS)
+    try:
+        with open(config_path()) as f:
+            cfg.update(json.load(f))
+    except FileNotFoundError:
+        pass
+    return cfg
+
+
+def now():
+    return float(os.environ.get("FLOWKIT_NOW") or time.time())
+
+
+def session_file():
+    return os.path.join(state_dir(), "session.json")
+
+
+def log_file():
+    return os.path.join(state_dir(), "flow-log.jsonl")
+
+
+def read_session():
+    try:
+        with open(session_file()) as f:
+            return json.load(f)
+    except (FileNotFoundError, ValueError):
+        return None
+
+
+def write_session(s):
+    os.makedirs(state_dir(), exist_ok=True)
+    with open(session_file(), "w") as f:
+        json.dump(s, f)
+
+
+def clear_session():
+    try:
+        os.remove(session_file())
+    except FileNotFoundError:
+        pass
+
+
+def run(cmd):
+    if DRY:
+        print("DRY:", " ".join(cmd))
+        return
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def osascript(*lines, args=()):
+    cmd = ["osascript"]
+    for line in lines:
+        cmd += ["-e", line]
+    run(cmd + list(args))
+
+
+def notify(title, message, sound=None):
+    osascript("on run argv", "display notification (item 2 of argv) with title (item 1 of argv)", "end run",
+              args=(title, message))
+    if sound:
+        run(["afplay", "/System/Library/Sounds/%s.aiff" % sound])
+
+
+def raycast_focus_start(cfg, goal, minutes):
+    q = {"goal": goal, "duration": str(int(minutes * 60)), "mode": cfg["raycast_mode"]}
+    if cfg["raycast_categories"]:
+        q["categories"] = ",".join(cfg["raycast_categories"])
+    run(["open", "-g", "raycast://focus/start?" + urllib.parse.urlencode(q, quote_via=urllib.parse.quote)])
+
+
+def fmt_min(m):
+    m = int(round(m))
+    return "%dh%02dm" % (m // 60, m % 60) if m >= 60 else "%dm" % m
+
+
+def spawn_timer(seconds):
+    if DRY:
+        print("DRY: timer %ds -> flow _end" % seconds)
+        return None
+    code = "import time,subprocess,sys; time.sleep(%d); subprocess.run([sys.executable, %r, '_end'])" % (
+        seconds, os.path.abspath(__file__))
+    p = subprocess.Popen([sys.executable, "-c", code], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True, env=dict(os.environ))
+    return p.pid
+
+
+def kill_timer(s):
+    pid = s.get("timer_pid")
+    if pid and not DRY:
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+
+def teardown(cfg):
+    if cfg["raycast_focus"]:
+        run(["open", "-g", "raycast://focus/complete"])
+    if cfg["focus_off_shortcut"]:
+        run(["shortcuts", "run", cfg["focus_off_shortcut"]])
+    if cfg["spotify_playlist"] and cfg["spotify_pause_on_stop"]:
+        osascript('if application "Spotify" is running then tell application "Spotify" to pause')
+
+
+def log_session(s, ended_at, completed):
+    os.makedirs(state_dir(), exist_ok=True)
+    entry = {"goal": s["goal"], "started_at": s["started_at"], "ended_at": ended_at,
+             "planned_min": s["minutes"], "actual_min": round((ended_at - s["started_at"]) / 60.0, 1),
+             "completed": completed}
+    with open(log_file(), "a") as f:
+        f.write(json.dumps(entry) + "\n")
+    return entry
+
+
+def cmd_start(cfg, args):
+    if read_session():
+        print("flow: a session is already running (flow status / flow stop)")
+        return 1
+    minutes, words = cfg["default_minutes"], list(args.goal)
+    if args.minutes is not None:
+        try:
+            minutes = float(args.minutes)
+        except ValueError:
+            words.insert(0, args.minutes)
+    if minutes <= 0:
+        print("flow: minutes must be positive")
+        return 2
+    goal = " ".join(words).strip() or cfg["default_goal"]
+    t = now()
+
+    if cfg["raycast_focus"]:
+        raycast_focus_start(cfg, goal, minutes)
+    if cfg["focus_on_shortcut"]:
+        run(["shortcuts", "run", cfg["focus_on_shortcut"]])
+    if cfg["spotify_playlist"]:
+        osascript("on run argv", 'tell application "Spotify" to play track (item 1 of argv)', "end run",
+                  args=(cfg["spotify_playlist"],))
+    for app in cfg["open_apps"]:
+        run(["open", "-a", app])
+    for url in cfg["open_urls"]:
+        run(["open", url])
+
+    pid = spawn_timer(int(minutes * 60))
+    write_session({"goal": goal, "minutes": minutes, "started_at": t, "ends_at": t + minutes * 60, "timer_pid": pid})
+    until = datetime.datetime.fromtimestamp(t + minutes * 60).strftime("%-I:%M%p").lower()
+    print("flow: %s on \"%s\" (until %s)" % (fmt_min(minutes), goal, until))
+    return 0
+
+
+def cmd_stop(cfg, args, completed=False):
+    s = read_session()
+    if not s:
+        print("flow: no session running")
+        return 1
+    kill_timer(s)
+    teardown(cfg)
+    entry = log_session(s, now(), completed)
+    clear_session()
+    if completed:
+        notify("Flow session done", "%s on %s. Take %d." % (fmt_min(entry["actual_min"]), s["goal"], cfg["break_minutes"]),
+               cfg["end_sound"])
+    print("flow: %s %s on \"%s\"" % ("finished" if completed else "stopped after", fmt_min(entry["actual_min"]), s["goal"]))
+    return 0
+
+
+def cmd_status(cfg, args):
+    s = read_session()
+    if not s:
+        print("" if args.quiet else "no flow session")
+        return 0 if args.quiet else 1
+    left = max(0, (s["ends_at"] - now()) / 60)
+    print("⏱ %s left · %s" % (fmt_min(left), s["goal"]))
+    return 0
+
+
+def cmd_extend(cfg, args):
+    s = read_session()
+    if not s:
+        print("flow: no session running")
+        return 1
+    kill_timer(s)
+    s["ends_at"] += args.minutes * 60
+    s["minutes"] += args.minutes
+    s["timer_pid"] = spawn_timer(int(s["ends_at"] - now()))
+    write_session(s)
+    print("flow: +%dm, %s left" % (args.minutes, fmt_min((s["ends_at"] - now()) / 60)))
+    return 0
+
+
+def read_log():
+    try:
+        with open(log_file()) as f:
+            return [json.loads(l) for l in f if l.strip()]
+    except FileNotFoundError:
+        return []
+
+
+def cmd_log(cfg, args):
+    cutoff = now() - args.days * 86400
+    entries = [e for e in read_log() if e["started_at"] >= cutoff]
+    if not entries:
+        print("no sessions in the last %d day(s)" % args.days)
+        return 0
+    by_day, by_goal = {}, {}
+    for e in entries:
+        day = datetime.datetime.fromtimestamp(e["started_at"]).strftime("%a %b %-d")
+        by_day.setdefault(day, []).append(e)
+        by_goal[e["goal"]] = by_goal.get(e["goal"], 0) + e["actual_min"]
+    total = sum(e["actual_min"] for e in entries)
+    done = sum(1 for e in entries if e["completed"])
+    for day, es in by_day.items():
+        print("%-11s %6s  %s" % (day, fmt_min(sum(e["actual_min"] for e in es)),
+                                 "".join("●" if e["completed"] else "◐" for e in es)))
+    print("\ntop goals:")
+    for goal, m in sorted(by_goal.items(), key=lambda kv: -kv[1])[:5]:
+        print("  %6s  %s" % (fmt_min(m), goal))
+    print("\n%s focused across %d sessions (%d completed)" % (fmt_min(total), len(entries), done))
+    return 0
+
+
+def cmd_config(cfg, args):
+    print("config: " + config_path() + ("" if os.path.exists(config_path()) else "  (not created; showing defaults)"))
+    print(json.dumps(cfg, indent=2))
+    return 0
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="flow", description="Focus sessions from one command.")
+    sub = ap.add_subparsers(dest="cmd")
+    p = sub.add_parser("start")
+    p.add_argument("minutes", nargs="?")
+    p.add_argument("goal", nargs="*")
+    sub.add_parser("stop")
+    p = sub.add_parser("status")
+    p.add_argument("-q", "--quiet", action="store_true", help="print nothing when idle (for status bars)")
+    p = sub.add_parser("extend")
+    p.add_argument("minutes", nargs="?", type=int, default=10)
+    p = sub.add_parser("log")
+    p.add_argument("--days", type=int, default=7)
+    sub.add_parser("config")
+    sub.add_parser("_end")
+    args = ap.parse_args(argv)
+    cfg = load_config()
+    if args.cmd == "start":
+        return cmd_start(cfg, args)
+    if args.cmd == "stop":
+        return cmd_stop(cfg, args)
+    if args.cmd == "_end":
+        return cmd_stop(cfg, args, completed=True)
+    if args.cmd == "status":
+        return cmd_status(cfg, args)
+    if args.cmd == "extend":
+        return cmd_extend(cfg, args)
+    if args.cmd == "log":
+        return cmd_log(cfg, args)
+    if args.cmd == "config":
+        return cmd_config(cfg, args)
+    ap.print_help()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
