@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+import argparse
+import datetime
+import os
+import re
+import subprocess
+import sys
+
+ITEM = re.compile(r"^- \[( |x)\] (.*)$")
+
+BROWSERS = [
+    ("Google Chrome", 'tell application "Google Chrome" to return (URL of active tab of front window) & "\\n" & (title of active tab of front window)'),
+    ("Arc", 'tell application "Arc" to return (URL of active tab of front window) & "\\n" & (title of active tab of front window)'),
+    ("Safari", 'tell application "Safari" to return (URL of front document) & "\\n" & (name of front document)'),
+]
+
+
+def inbox_path():
+    return os.path.expanduser(os.environ.get("FLOWKIT_INBOX", "~/.local/share/flowkit/inbox.md"))
+
+
+def now():
+    return os.environ.get("FLOWKIT_NOW") or datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+
+
+def read_items():
+    try:
+        with open(inbox_path()) as f:
+            return f.read().splitlines()
+    except FileNotFoundError:
+        return []
+
+
+def open_items(lines):
+    return [(i, m.group(2)) for i, l in enumerate(lines) for m in [ITEM.match(l)] if m and m.group(1) == " "]
+
+
+def front_tab():
+    if os.environ.get("FLOWKIT_FRONT_TAB"):
+        url, _, title = os.environ["FLOWKIT_FRONT_TAB"].partition("\n")
+        return url, title
+    running = subprocess.run(["osascript", "-e", 'tell application "System Events" to get name of every process'],
+                             capture_output=True, text=True).stdout
+    for app, script in BROWSERS:
+        if app in running:
+            out = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+            if out.returncode == 0 and out.stdout.strip():
+                url, _, title = out.stdout.strip().partition("\n")
+                return url, title
+    return None, None
+
+
+def one_line(text):
+    return " ".join(text.split())
+
+
+def append(text):
+    line = "- [ ] %s %s" % (now(), one_line(text))
+    path = inbox_path()
+    if os.environ.get("FLOWKIT_DRY_RUN") == "1":
+        print("DRY: append to %s: %s" % (path, line))
+        return line
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    new = not os.path.exists(path) or os.path.getsize(path) == 0
+    with open(path, "a") as f:
+        if new:
+            f.write("# Inbox\n\n")
+        f.write(line + "\n")
+    return line
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="capture", description="Append a thought to your inbox.")
+    ap.add_argument("text", nargs="*")
+    ap.add_argument("--clip", action="store_true", help="capture the clipboard")
+    ap.add_argument("--tab", action="store_true", help="capture the front browser tab")
+    ap.add_argument("--list", action="store_true", help="show open items, numbered")
+    ap.add_argument("--count", action="store_true", help="print the number of open items")
+    ap.add_argument("--done", type=int, metavar="N", help="check off open item N")
+    ap.add_argument("--open", action="store_true", help="open the inbox file")
+    ap.add_argument("--path", action="store_true", help="print the inbox path")
+    args = ap.parse_args(argv)
+
+    if args.path:
+        print(inbox_path())
+        return 0
+    lines = read_items()
+    if args.count:
+        print(len(open_items(lines)))
+        return 0
+    if args.list:
+        for n, (_, text) in enumerate(open_items(lines), 1):
+            print("%2d. %s" % (n, text))
+        return 0
+    if args.done:
+        items = open_items(lines)
+        if not 1 <= args.done <= len(items):
+            sys.exit("capture: no open item %d" % args.done)
+        idx, text = items[args.done - 1]
+        lines[idx] = "- [x] " + text
+        with open(inbox_path(), "w") as f:
+            f.write("\n".join(lines) + "\n")
+        print("done: " + text)
+        return 0
+    if args.open:
+        subprocess.run(["open", inbox_path()])
+        return 0
+
+    text = " ".join(args.text).strip()
+    if args.clip:
+        clip = subprocess.run(["pbpaste"], capture_output=True, text=True).stdout.strip()
+        text = (text + " — " + clip) if text and clip else (text or clip)
+    if args.tab:
+        url, title = front_tab()
+        if not url:
+            sys.exit("capture: no browser tab found")
+        link = "[%s](%s)" % (one_line(title or url).replace("]", ")"), url)
+        text = link + (" " + text if text else "")
+    if not text and not sys.stdin.isatty():
+        text = sys.stdin.read().strip()
+    if not text:
+        sys.exit("capture: nothing to capture")
+    print(append(text))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
