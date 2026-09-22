@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+import time
+
+ONLY = " Output only the result: no preamble, no quotes, no commentary."
+
+PRESETS = {
+    "fix": ("Fix spelling, grammar and punctuation. Keep the author's wording, tone, "
+            "formatting and language; change as little as possible." + ONLY, "text"),
+    "rewrite": ("Rewrite this to be clearer and tighter while keeping the meaning and voice." + ONLY, "text"),
+    "pro": ("Rewrite this in a polished, professional tone suitable for a recruiter or professor. "
+            "Keep it concise and warm, not stiff." + ONLY, "text"),
+    "casual": ("Rewrite this in a relaxed, friendly tone, like a message to a friend." + ONLY, "text"),
+    "shorter": ("Cut this to about half its length without losing anything important." + ONLY, "text"),
+    "tldr": ("Summarize in at most 2 sentences." + ONLY, "text"),
+    "bullets": ("Turn this into a short list of markdown bullet points capturing the key points." + ONLY, "text"),
+    "explain": ("Explain this simply for a smart CS student. Start with a one-line answer, then the "
+                "key ideas, then a tiny example if it helps. Be brief.", "text"),
+    "reply": ("The input is a message I received. Draft my reply. If I included an intent after "
+              "'INTENT:', follow it. Match the sender's formality, be brief, and never invent facts, "
+              "dates or commitments; use [brackets] for anything I need to fill in." + ONLY, "text"),
+    "commit": ("Write a git commit message for this diff: an imperative subject line under 72 "
+               "characters, a blank line, then a short body explaining why, only if the diff is "
+               "non-trivial." + ONLY, "diff"),
+    "eli5": ("Explain this like I'm five, in 3-4 sentences.", "text"),
+    "translate": ("Translate this to English (or to the language named after 'INTENT:'). "
+                  "Keep formatting." + ONLY, "text"),
+    "todo": ("Extract every action item from this as a markdown checklist ('- [ ] ...'), "
+             "with owners and dates when stated." + ONLY, "text"),
+}
+
+DRY = os.environ.get("FLOWKIT_DRY_RUN") == "1"
+
+
+def config_dir():
+    return os.environ.get("FLOWKIT_CONFIG_DIR") or os.path.expanduser("~/.config/flowkit")
+
+
+def load_presets():
+    presets = {k: v[0] for k, v in PRESETS.items()}
+    kinds = {k: v[1] for k, v in PRESETS.items()}
+    pdir = os.path.join(config_dir(), "prompts")
+    if os.path.isdir(pdir):
+        for fn in sorted(os.listdir(pdir)):
+            if fn.endswith(".md"):
+                with open(os.path.join(pdir, fn)) as f:
+                    presets[fn[:-3]] = f.read().strip()
+                kinds.setdefault(fn[:-3], "text")
+    return presets, kinds
+
+
+def pbpaste():
+    try:
+        return subprocess.run(["pbpaste"], capture_output=True, text=True).stdout
+    except FileNotFoundError:
+        return ""
+
+
+def pbcopy(text):
+    try:
+        subprocess.run(["pbcopy"], input=text, text=True)
+    except FileNotFoundError:
+        pass
+
+
+def keystroke(key):
+    subprocess.run(["osascript", "-e", 'tell application "System Events" to keystroke "%s" using command down' % key],
+                   capture_output=True)
+
+
+def grab_selection():
+    before = pbpaste()
+    pbcopy("⁣")
+    keystroke("c")
+    for _ in range(20):
+        time.sleep(0.05)
+        now = pbpaste()
+        if now != "⁣":
+            return now, before
+    pbcopy(before)
+    return before, before
+
+
+def claude_bin():
+    exe = os.environ.get("FLOWKIT_CLAUDE_BIN")
+    if exe:
+        return exe
+    for cand in (shutil.which("claude"), os.path.expanduser("~/.local/bin/claude"),
+                 os.path.expanduser("~/.claude/local/claude"), "/opt/homebrew/bin/claude"):
+        if cand and os.access(cand, os.X_OK):
+            return cand
+    sys.exit("ask: can't find the claude CLI (set FLOWKIT_CLAUDE_BIN)")
+
+
+def clean_env():
+    env = dict(os.environ)
+    for k in list(env):
+        if k == "CLAUDECODE" or k.startswith("CLAUDE_CODE_"):
+            env.pop(k)
+    return env
+
+
+def call_claude(system, text, model):
+    cmd = [claude_bin(), "-p", "--model", model, "--system-prompt", system,
+           "--tools", "", "--no-session-persistence", "--setting-sources", ""]
+    if DRY:
+        return "DRY: %s <<< %r" % (" ".join(cmd[:4]), text[:60])
+    proc = subprocess.run(cmd, input=text, capture_output=True, text=True, env=clean_env(), timeout=180)
+    if proc.returncode != 0:
+        sys.exit("ask: claude failed: %s" % (proc.stderr.strip() or proc.stdout.strip()))
+    return proc.stdout.strip()
+
+
+def staged_diff():
+    out = subprocess.run(["git", "diff", "--staged"], capture_output=True, text=True)
+    return out.stdout
+
+
+def main(argv=None):
+    presets, kinds = load_presets()
+    ap = argparse.ArgumentParser(prog="ask", description="Pipe text through Claude with a preset.")
+    ap.add_argument("preset", nargs="?", help="one of: " + ", ".join(sorted(presets)))
+    ap.add_argument("text", nargs="*", help="input text (default: stdin, else clipboard)")
+    ap.add_argument("-s", "--selection", action="store_true", help="copy the current selection as input")
+    ap.add_argument("-p", "--paste", action="store_true", help="paste the result over the selection")
+    ap.add_argument("--no-copy", action="store_true", help="don't put the result on the clipboard")
+    ap.add_argument("-m", "--model", default=os.environ.get("FLOWKIT_ASK_MODEL", "haiku"))
+    ap.add_argument("--system", help="ad-hoc system prompt instead of a preset")
+    ap.add_argument("--list", action="store_true", help="list presets")
+    args = ap.parse_args(argv)
+
+    if args.list:
+        for name in sorted(presets):
+            print("%-10s %s" % (name, presets[name].split(".")[0]))
+        return 0
+    if not args.preset and not args.system:
+        ap.print_usage(sys.stderr)
+        return 2
+
+    system = args.system
+    kind = "text"
+    words = list(args.text)
+    if system and args.preset:
+        words = [args.preset] + words
+    elif not system:
+        if args.preset not in presets:
+            words = [args.preset] + words
+            system = "Answer concisely and directly. Use markdown only when it helps."
+        else:
+            system, kind = presets[args.preset], kinds[args.preset]
+
+    previous = None
+    arg_text = " ".join(words).strip()
+    if args.selection:
+        body, previous = grab_selection()
+    elif not sys.stdin.isatty() and os.environ.get("FLOWKIT_IGNORE_STDIN") != "1":
+        body = sys.stdin.read()
+    elif kind == "diff":
+        body = staged_diff()
+    else:
+        body = ""
+
+    if args.preset in ("reply", "translate") and arg_text:
+        body = (body or pbpaste()) + "\n\nINTENT: " + arg_text
+    elif arg_text and not body:
+        body = arg_text
+    elif arg_text:
+        body = arg_text + "\n\n" + body
+    if not body.strip():
+        body = pbpaste()
+    if not body.strip():
+        sys.exit("ask: no input (pass text, pipe stdin, or copy something)")
+
+    result = call_claude(system, body, args.model)
+    print(result)
+    if args.paste:
+        pbcopy(result)
+        keystroke("v")
+        if previous is not None and args.no_copy:
+            time.sleep(0.3)
+            pbcopy(previous)
+    elif not args.no_copy:
+        pbcopy(result)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
