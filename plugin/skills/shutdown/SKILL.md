@@ -25,9 +25,11 @@ Note from me: $ARGUMENTS
 
 4. **Decisions.** Read my note above and today's conversation for decisions (what I chose and why). Append each to `decisions/log.md` as `- YYYY-MM-DD: <decision>. Why: <reason>. Source: <where>.` If I gave none, ask me for one or two lines ("anything you decided or learned today?") and log what I say; if I skip, log nothing.
 
-5. **People.** If today involved a person (email drafted, call, interview, coffee chat), append a dated line to their `people/<name>.md` History and update `last_contact`. Create the page only if they're someone I'm actively dealing with.
+5. **Career.** If the `career-sync` skill is available (it lives in `~/dev/jobsearch`), run it so the ledger, Career tasks and people pages match what happened today. Otherwise skip this step.
 
-6. **Handoff.** Write `daily/YYYY-MM-DD.md` (today's date), overwriting if it exists:
+6. **People.** If today involved a person (email drafted, call, interview, coffee chat), append a dated line to their `people/<name>.md` History and update `last_contact`. Create the page only if they're someone I'm actively dealing with.
+
+7. **Handoff.** Write `daily/YYYY-MM-DD.md` (today's date), overwriting if it exists:
    ```
    # YYYY-MM-DD
    ## Done
@@ -41,8 +43,8 @@ Note from me: $ARGUMENTS
    ```
    Keep it under 20 lines. `today` reads this tomorrow.
 
-7. **Commit the vault**: `git -C ${FLOWKIT_BRAIN:-~/brain} add -A && git -C ${FLOWKIT_BRAIN:-~/brain} commit -qm "Shutdown YYYY-MM-DD"`.
+8. **Commit the vault**: `git -C ${FLOWKIT_BRAIN:-~/brain} add -A && git -C ${FLOWKIT_BRAIN:-~/brain} commit -qm "Shutdown YYYY-MM-DD"`.
 
-8. Complete the recurring "Done for today" Todoist task if it's due.
+9. Complete the recurring "Done for today" Todoist task if it's due.
 
 Reply with at most 10 lines: done count, what rolled (and anything Stuck), tomorrow's first thing, and anything you need me to confirm. Don't rewrite Claude's memory files here; that happens in the weekly review.
