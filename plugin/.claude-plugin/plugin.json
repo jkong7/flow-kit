@@ -1,6 +1,6 @@
 {
   "name": "flow-kit",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Flow-state helpers for Claude Code: done/permission chimes, a dangerous-command guard, auto-format on edit, and daily-driver slash commands.",
   "author": { "name": "Jonathan Kong", "url": "https://github.com/jkong7" },
   "homepage": "https://github.com/jkong7/flow-kit",
