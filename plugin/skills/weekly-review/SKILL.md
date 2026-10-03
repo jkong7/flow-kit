@@ -49,8 +49,15 @@ A single experiment for next week.
    - status-not-rule: move the status into the vault project page and leave only rules and durable facts in memory;
    - duplicates: merge.
    Every surviving fact gets an absolute date and a source.
-3. **Vault hygiene.** Projects with no commits in 14 days: ask keep active or park. People with open loops older than 14 days: list them. Ideas added this week: suggest links to related notes, projects or classes.
-4. **Me.** If this week's decisions or behavior show a new preference, goal or change in direction, propose an edit to `me/preferences.md` or `me/goals.md`.
-5. After my approval, apply the changes, then commit the vault: `git -C ${FLOWKIT_BRAIN:-~/brain} add -A && git -C ${FLOWKIT_BRAIN:-~/brain} commit -qm "Weekly review YYYY-MM-DD"`.
+3. **Wiki lint** (Karpathy LLM-wiki pattern; start from `index.md` and this week's `log.md` lines):
+   - orphans: notes nothing links to and that link to nothing;
+   - contradictions: two notes stating different facts (dates, statuses, people's roles), with the newer sourced fact winning;
+   - superseded claims: facts a newer note or log line replaced;
+   - unsourced AI claims: synthesis lines with no link, URL or ledger/email id;
+   - `## Suggested links` sections: confirm or drop each suggestion.
+   Propose fixes in the same diff as the memory changes. After applying, append one `log.md` line per change and rerun `python3 .tools/build_index.py`.
+4. **Vault hygiene.** Projects with no commits in 14 days: ask keep active or park. People with open loops older than 14 days: list them. Ideas added this week: suggest links to related notes, projects or classes.
+5. **Me.** If this week's decisions or behavior show a new preference, goal or change in direction, propose an edit to `me/preferences.md` or `me/goals.md`.
+6. After my approval, apply the changes, then commit the vault: `git -C ${FLOWKIT_BRAIN:-~/brain} add -A && git -C ${FLOWKIT_BRAIN:-~/brain} commit -qm "Weekly review YYYY-MM-DD"`.
 
 Save the review itself to `daily/YYYY-MM-DD-weekly.md` and complete the recurring "Weekly review" Todoist task.
