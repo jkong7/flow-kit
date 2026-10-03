@@ -13,7 +13,7 @@ CAPTURE_WORDS = ("note", "remember", "jot", "capture", "remind me", "todo", "to 
 
 SYSTEM = (
     "You are Jonny's voice assistant. Your reply is read aloud by text to speech, so answer in at most "
-    "three short spoken sentences: no markdown, no lists, no URLs, no em dashes. His vault is at ~/brain "
+    "three short spoken sentences: no markdown, no lists, no URLs, never use em dashes or en dashes. His vault is at ~/brain "
     "(me/, people/, projects/, classes/, daily/ handoffs) and his tasks are in Todoist; look things up "
     "before answering. Never send, share or delete anything. If the request needs an action you can't take "
     "read-only, say what you'd do and suggest he say \"note\" followed by the task."
@@ -72,6 +72,8 @@ def notify(title, message):
 
 
 def speak(text):
+    if os.environ.get("FLOWKIT_MUTE") == "1":
+        return
     voice = os.environ.get("FLOWKIT_VOICE")
     cmd = ["say", "-r", os.environ.get("FLOWKIT_VOICE_RATE", "200")]
     if voice:
@@ -167,9 +169,33 @@ def clean_env():
     return env
 
 
+BRIEF = re.compile(r"^\d{4}-\d{2}-\d{2}-brief\.md$")
+HANDOFF = re.compile(r"^\d{4}-\d{2}-\d{2}\.md$")
+
+
+def latest(folder, pattern):
+    try:
+        names = sorted(n for n in os.listdir(folder) if pattern.match(n))
+    except FileNotFoundError:
+        return ""
+    if not names:
+        return ""
+    with open(os.path.join(folder, names[-1])) as f:
+        return "%s:\n%s" % (names[-1], f.read()[:2500])
+
+
+def context():
+    daily = os.path.join(brain_dir(), "daily")
+    parts = [latest(daily, BRIEF), latest(daily, HANDOFF)]
+    now = datetime.datetime.now().strftime("%A %Y-%m-%d %H:%M")
+    body = "\n\n".join(p for p in parts if p)
+    return "It is %s in Chicago. Today's brief and latest handoff follow; answer from them when they cover the question and only call tools when they don't.\n\n%s" % (now, body)
+
+
 def ask(text):
-    cmd = [claude_bin(), "-p", "--model", os.environ.get("FLOWKIT_JARVIS_MODEL", "sonnet"),
-           "--append-system-prompt", SYSTEM, "--allowedTools", READ_TOOLS, "--permission-mode", "dontAsk"]
+    cmd = [claude_bin(), "-p", "--model", os.environ.get("FLOWKIT_JARVIS_MODEL", "haiku"),
+           "--append-system-prompt", SYSTEM + "\n\n" + context(), "--allowedTools", READ_TOOLS,
+           "--permission-mode", "dontAsk", "--max-turns", os.environ.get("FLOWKIT_JARVIS_TURNS", "4")]
     if DRY:
         return "DRY: %s <<< %r" % (" ".join(cmd[:4]), text[:60])
     proc = subprocess.run(cmd, input=text, capture_output=True, text=True, env=clean_env(),
