@@ -1,0 +1,233 @@
+#!/usr/bin/env python3
+import argparse
+import datetime
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import time
+
+CAPTURE_WORDS = ("note", "remember", "jot", "capture", "remind me", "todo", "to do", "add a task", "idea")
+
+SYSTEM = (
+    "You are Jonny's voice assistant. Your reply is read aloud by text to speech, so answer in at most "
+    "three short spoken sentences: no markdown, no lists, no URLs, no em dashes. His vault is at ~/brain "
+    "(me/, people/, projects/, classes/, daily/ handoffs) and his tasks are in Todoist; look things up "
+    "before answering. Never send, share or delete anything. If the request needs an action you can't take "
+    "read-only, say what you'd do and suggest he say \"note\" followed by the task."
+)
+
+TODOIST_READ = ("find-tasks-by-date", "find-tasks", "get-overview", "find-projects")
+
+READ_TOOLS = ",".join(
+    ["Read", "Glob", "Grep", "mcp__claude_ai_Google_Calendar__list_events", "mcp__claude_ai_Gmail__search_threads"]
+    + ["%s__%s" % (prefix, tool) for prefix in ("mcp__plugin_todoist_todoist", "mcp__claude_ai_Todoist")
+       for tool in TODOIST_READ]
+)
+
+DRY = os.environ.get("FLOWKIT_DRY_RUN") == "1"
+
+
+def state_dir():
+    path = os.environ.get("FLOWKIT_STATE_DIR") or os.path.expanduser("~/.local/state/flowkit")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def brain_dir():
+    return os.path.expanduser(os.environ.get("FLOWKIT_BRAIN", "~/brain"))
+
+
+def pid_path():
+    return os.path.join(state_dir(), "jarvis.pid")
+
+
+def wav_path():
+    return os.path.join(state_dir(), "jarvis.wav")
+
+
+def log(line):
+    with open(os.path.join(state_dir(), "jarvis.log"), "a") as f:
+        f.write("%s %s\n" % (datetime.datetime.now().isoformat(timespec="seconds"), line))
+
+
+def run(cmd, **kw):
+    if DRY:
+        print("DRY:", " ".join(cmd))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    return subprocess.run(cmd, **kw)
+
+
+def chime(name):
+    path = "/System/Library/Sounds/%s.aiff" % name
+    if os.path.exists(path) and not DRY:
+        subprocess.Popen(["afplay", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def notify(title, message):
+    script = 'on run argv\ndisplay notification (item 2 of argv) with title (item 1 of argv)\nend run'
+    run(["osascript", "-e", script, title, message[:240]], capture_output=True)
+
+
+def speak(text):
+    voice = os.environ.get("FLOWKIT_VOICE")
+    cmd = ["say", "-r", os.environ.get("FLOWKIT_VOICE_RATE", "200")]
+    if voice:
+        cmd += ["-v", voice]
+    run(cmd + [text], capture_output=True)
+
+
+def recording_pid():
+    try:
+        with open(pid_path()) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)
+        return pid
+    except (FileNotFoundError, ValueError, ProcessLookupError, PermissionError):
+        return None
+
+
+def start_recording():
+    ffmpeg = shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
+    device = os.environ.get("FLOWKIT_MIC", "0")
+    cmd = [ffmpeg, "-loglevel", "error", "-y", "-f", "avfoundation", "-i", ":" + device,
+           "-ar", "16000", "-ac", "1", "-t", "120", wav_path()]
+    if DRY:
+        print("DRY:", " ".join(cmd))
+        return
+    proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    with open(pid_path(), "w") as f:
+        f.write(str(proc.pid))
+    chime("Tink")
+
+
+def stop_recording(pid):
+    os.kill(pid, signal.SIGINT)
+    for _ in range(50):
+        try:
+            os.kill(pid, 0)
+            time.sleep(0.05)
+        except ProcessLookupError:
+            break
+    os.remove(pid_path())
+    chime("Pop")
+
+
+def transcribe(path):
+    exe = shutil.which("parakeet-mlx") or os.path.expanduser("~/.local/bin/parakeet-mlx")
+    out_dir = state_dir()
+    proc = run([exe, path, "--output-format", "txt", "--output-dir", out_dir], capture_output=True, text=True, timeout=120)
+    txt = os.path.join(out_dir, os.path.splitext(os.path.basename(path))[0] + ".txt")
+    if proc.returncode != 0 or not os.path.exists(txt):
+        return ""
+    with open(txt) as f:
+        text = f.read().strip()
+    os.remove(txt)
+    return text
+
+
+def is_capture(text):
+    t = text.lower().lstrip()
+    return any(t.startswith(w) for w in CAPTURE_WORDS)
+
+
+def slug(text):
+    words = re.sub(r"[^a-z0-9 ]", "", text.lower()).split()[:6]
+    return "-".join(words) or "capture"
+
+
+def capture(text):
+    inbox = os.path.join(brain_dir(), "inbox")
+    os.makedirs(inbox, exist_ok=True)
+    stamp = datetime.datetime.now().strftime("%Y-%m-%d-%H%M%S")
+    path = os.path.join(inbox, "%s-%s.md" % (stamp, slug(text)))
+    with open(path, "w") as f:
+        f.write(text.strip() + "\n\nSource: voice (jarvis on Mac)\n")
+    sync = os.path.expanduser("~/.local/bin/brain-sync")
+    if os.path.exists(sync) and not DRY:
+        subprocess.Popen([sync], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return path
+
+
+def claude_bin():
+    for cand in (os.environ.get("FLOWKIT_CLAUDE_BIN"), shutil.which("claude"), os.path.expanduser("~/.local/bin/claude"),
+                 os.path.expanduser("~/.claude/local/claude"), "/opt/homebrew/bin/claude"):
+        if cand and os.access(cand, os.X_OK):
+            return cand
+    sys.exit("jarvis: can't find the claude CLI")
+
+
+def clean_env():
+    env = dict(os.environ)
+    for k in list(env):
+        if k == "CLAUDECODE" or k.startswith("CLAUDE_CODE_"):
+            env.pop(k)
+    return env
+
+
+def ask(text):
+    cmd = [claude_bin(), "-p", "--model", os.environ.get("FLOWKIT_JARVIS_MODEL", "sonnet"),
+           "--append-system-prompt", SYSTEM, "--allowedTools", READ_TOOLS, "--permission-mode", "dontAsk"]
+    if DRY:
+        return "DRY: %s <<< %r" % (" ".join(cmd[:4]), text[:60])
+    proc = subprocess.run(cmd, input=text, capture_output=True, text=True, env=clean_env(),
+                          cwd=os.path.expanduser("~"), timeout=180)
+    if proc.returncode != 0:
+        return "Sorry, I couldn't reach Claude."
+    return proc.stdout.strip()
+
+
+def handle(text):
+    if not text:
+        speak("I didn't catch that.")
+        return 1
+    log("heard: " + text)
+    if is_capture(text):
+        path = capture(text)
+        log("captured: " + path)
+        notify("Captured", text)
+        speak("Saved.")
+        return 0
+    notify("Asking Claude", text)
+    reply = ask(text)
+    log("reply: " + reply.replace("\n", " "))
+    notify("Claude", reply)
+    speak(reply)
+    return 0
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="jarvis", description="Push-to-talk voice assistant: capture to the vault or ask Claude out loud.")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("toggle", help="start recording, or stop and handle what was said")
+    p_ask = sub.add_parser("ask", help="ask Claude and speak the answer")
+    p_ask.add_argument("text", nargs="+")
+    p_cap = sub.add_parser("capture", help="write a capture to the vault inbox")
+    p_cap.add_argument("text", nargs="+")
+    p_tr = sub.add_parser("transcribe", help="transcribe a wav file")
+    p_tr.add_argument("path")
+    args = ap.parse_args(argv)
+
+    if args.cmd == "capture":
+        print(capture(" ".join(args.text)))
+        return 0
+    if args.cmd == "ask":
+        reply = ask(" ".join(args.text))
+        print(reply)
+        speak(reply)
+        return 0
+    if args.cmd == "transcribe":
+        print(transcribe(args.path))
+        return 0
+    pid = recording_pid()
+    if pid is None:
+        start_recording()
+        return 0
+    stop_recording(pid)
+    return handle(transcribe(wav_path()))
+
+
+if __name__ == "__main__":
+    sys.exit(main())

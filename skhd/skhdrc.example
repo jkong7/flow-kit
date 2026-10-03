@@ -10,3 +10,4 @@ hyper - i : "$HOME/dev/flow-kit/bin/capture" --open
 hyper - s : open -g "raycast://script-commands/flow-start"
 hyper - x : "$HOME/dev/flow-kit/bin/flow" stop
 hyper - space : open -g "raycast://extensions/raycast/raycast-ai/ai-chat"
+alt - j : "$HOME/dev/flow-kit/bin/jarvis" toggle
