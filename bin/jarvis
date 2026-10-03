@@ -9,14 +9,16 @@ import subprocess
 import sys
 import time
 
-CAPTURE_WORDS = ("note", "remember", "jot", "capture", "remind me", "todo", "to do", "add a task", "idea")
+QUESTION_WORDS = ("what", "whats", "what's", "when", "whens", "when's", "where", "who", "whos", "who's", "why", "how", "hows", "how's",
+                  "which", "is", "are", "am", "do", "does", "did", "should", "can", "could", "will", "would", "have", "has", "any")
+ASK_PREFIXES = ("hey claude", "claude", "question", "quick question", "tell me", "check", "look up", "remind me what")
 
 SYSTEM = (
     "You are Jonny's voice assistant. Your reply is read aloud by text to speech, so answer in at most "
     "three short spoken sentences: no markdown, no lists, no URLs, never use em dashes or en dashes. His vault is at ~/brain "
     "(me/, people/, projects/, classes/, daily/ handoffs) and his tasks are in Todoist; look things up "
     "before answering. Never send, share or delete anything. If the request needs an action you can't take "
-    "read-only, say what you'd do and suggest he say \"note\" followed by the task."
+    "read-only, say what you'd do and tell him to say it again as a statement, not a question, so it is captured and the cloud does it."
 )
 
 TODOIST_READ = ("find-tasks-by-date", "find-tasks", "get-overview", "find-projects")
@@ -130,9 +132,14 @@ def transcribe(path):
     return text
 
 
-def is_capture(text):
-    t = text.lower().lstrip()
-    return any(t.startswith(w) for w in CAPTURE_WORDS)
+def is_question(text):
+    t = text.strip().lower()
+    if t.endswith("?"):
+        return True
+    if any(t.startswith(p) for p in ASK_PREFIXES):
+        return True
+    first = re.sub(r"[^a-z']", "", t.split()[0]) if t.split() else ""
+    return first in QUESTION_WORDS
 
 
 def slug(text):
@@ -210,7 +217,7 @@ def handle(text):
         speak("I didn't catch that.")
         return 1
     log("heard: " + text)
-    if is_capture(text):
+    if not is_question(text):
         path = capture(text)
         log("captured: " + path)
         notify("Captured", text)
