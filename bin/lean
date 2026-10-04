@@ -1,0 +1,371 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+
+HOME = os.path.expanduser("~")
+NOW = time.time()
+
+CACHES = [
+    ("npm", "~/.npm", "npm cache clean --force"),
+    ("uv", "~/.cache/uv", "uv cache clean"),
+    ("pip", "~/Library/Caches/pip", "rm -rf ~/Library/Caches/pip"),
+    ("homebrew", "~/Library/Caches/Homebrew", "brew cleanup --prune=all"),
+    ("go-build", "~/Library/Caches/go-build", "go clean -cache"),
+    ("go-mod", "~/go/pkg/mod", "go clean -modcache"),
+    ("pnpm-store", "~/Library/pnpm/store", "pnpm store prune"),
+    ("yarn", "~/Library/Caches/Yarn", "rm -rf ~/Library/Caches/Yarn"),
+    ("playwright", "~/Library/Caches/ms-playwright", "rm -rf ~/Library/Caches/ms-playwright"),
+    ("codex-runtimes", "~/.cache/codex-runtimes", "rm -rf ~/.cache/codex-runtimes"),
+    ("torch", "~/.cache/torch", "rm -rf ~/.cache/torch"),
+    ("trash", "~/.Trash", "rm -rf ~/.Trash/*"),
+]
+
+REVIEW_DIRS = [
+    ("claude-vm", "~/Library/Application Support/Claude/vm_bundles",
+     "Claude desktop sandbox VM; re-downloads when that feature is used",
+     "rm -rf ~/Library/Application\\ Support/Claude/vm_bundles"),
+]
+
+DEV_PROCS = ("node", "next-server", "python", "python3", "ruby", "go", "bun", "deno", "vite", "uvicorn", "gunicorn")
+
+
+def sh(cmd, cwd=None):
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd, timeout=60)
+        return p.stdout if p.returncode == 0 else ""
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def du(path):
+    out = sh(["du", "-sk", path])
+    try:
+        return int(out.split()[0]) * 1024
+    except (IndexError, ValueError):
+        return 0
+
+
+def human(n):
+    for unit in ("B", "K", "M", "G", "T"):
+        if n < 1024 or unit == "T":
+            return ("%.1f%s" % (n, unit)) if unit in ("G", "T") else ("%d%s" % (n, unit))
+        n /= 1024.0
+
+
+def idle_days(path):
+    candidates = [os.path.join(path, ".git", "logs", "HEAD"), os.path.join(path, ".git", "index"), path]
+    for c in candidates:
+        if os.path.exists(c):
+            return int((NOW - os.path.getmtime(c)) / 86400)
+    return 0
+
+
+def finding(fid, category, label, recommend, risk, reason, action, size=0, ram=0):
+    return {"id": fid, "category": category, "label": label, "size": size, "ram": ram,
+            "recommend": recommend, "risk": risk, "reason": reason, "action": action}
+
+
+def rss_mb(pid):
+    out = sh(["ps", "-o", "rss=", "-p", str(pid)]).strip()
+    return int(out) // 1024 if out.isdigit() else 0
+
+
+def scan_services():
+    if not shutil.which("brew"):
+        return []
+    try:
+        services = json.loads(sh(["brew", "services", "info", "--all", "--json"]) or "[]")
+    except ValueError:
+        return []
+    out = []
+    for s in services:
+        if not s.get("running"):
+            continue
+        name = s.get("name")
+        out.append(finding("service:%s" % name, "services", "%s auto-starts at login" % name, True, "safe",
+                           "stops it and disables auto-start; start on demand with `brew services start %s`" % name,
+                           "brew services stop %s" % name, ram=rss_mb(s.get("pid") or 0)))
+    return out
+
+
+def scan_servers(dev):
+    if not shutil.which("lsof"):
+        return []
+    pids = {}
+    for line in sh(["lsof", "-nP", "-iTCP", "-sTCP:LISTEN", "-Fpcn"]).splitlines():
+        if line.startswith("p"):
+            pid = int(line[1:])
+            pids.setdefault(pid, {"ports": []})
+        elif line.startswith("c"):
+            pids[pid]["cmd"] = line[1:]
+        elif line.startswith("n"):
+            pids[pid]["ports"].append(line.rsplit(":", 1)[-1])
+    out = []
+    for pid, info in pids.items():
+        if not info.get("cmd", "").startswith(DEV_PROCS):
+            continue
+        cwd = next((l[1:] for l in sh(["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"]).splitlines()
+                    if l.startswith("n")), "")
+        if not cwd.startswith(dev + os.sep):
+            continue
+        ports = ",".join(sorted(set(info["ports"])))
+        out.append(finding("server:%s" % ports, "servers", "%s on :%s in %s" % (info["cmd"], ports, os.path.relpath(cwd, dev)),
+                           True, "safe", "dev server left running", "kill %d" % pid, ram=rss_mb(pid)))
+    return out
+
+
+def scan_caches():
+    out = []
+    for name, path, action in CACHES:
+        full = os.path.expanduser(path)
+        size = du(full) if os.path.isdir(full) else 0
+        if size >= 100 * 1024 ** 2:
+            out.append(finding("cache:%s" % name, "caches", "%s cache (%s)" % (name, path), True, "safe",
+                               "rebuilds automatically when needed", action, size=size))
+    return out
+
+
+def scan_review_dirs():
+    out = []
+    for name, path, reason, action in REVIEW_DIRS:
+        full = os.path.expanduser(path)
+        size = du(full) if os.path.isdir(full) else 0
+        if size >= 500 * 1024 ** 2:
+            out.append(finding("dir:%s" % name, "apps", path, False, "review", reason, action, size=size))
+    return out
+
+
+def scan_models():
+    out = []
+    hub = os.path.join(HOME, ".cache", "huggingface", "hub")
+    if os.path.isdir(hub):
+        for d in sorted(os.listdir(hub)):
+            if not d.startswith("models--"):
+                continue
+            full = os.path.join(hub, d)
+            size = du(full)
+            if size < 100 * 1024 ** 2:
+                continue
+            name = d[len("models--"):].replace("--", "/")
+            days = idle_days(full)
+            out.append(finding("hf:%s" % name, "models", "Hugging Face %s (untouched %dd)" % (name, days),
+                               days >= 30, "review", "re-downloads on next use",
+                               "rm -rf %s" % shlex.quote(full), size=size))
+    return out
+
+
+def scan_ollama():
+    out = []
+    if shutil.which("ollama"):
+        for line in sh(["ollama", "list"]).splitlines()[1:]:
+            parts = line.split()
+            if not parts:
+                continue
+            out.append(finding("ollama:%s" % parts[0], "models", "Ollama %s (%s %s)" % (parts[0], parts[2], parts[3]),
+                               False, "review", "re-pull with `ollama pull %s`" % parts[0],
+                               "ollama rm %s" % parts[0], size=parse_size(parts[2], parts[3])))
+    return out
+
+
+def parse_size(num, unit):
+    mult = {"KB": 1024, "MB": 1024 ** 2, "GB": 1024 ** 3, "TB": 1024 ** 4}.get(unit.upper(), 1)
+    try:
+        return int(float(num) * mult)
+    except ValueError:
+        return 0
+
+
+def repos(dev):
+    if not os.path.isdir(dev):
+        return []
+    return [os.path.join(dev, d) for d in sorted(os.listdir(dev))
+            if os.path.isdir(os.path.join(dev, d, ".git")) and not os.path.islink(os.path.join(dev, d))]
+
+
+def default_ref(repo):
+    head = sh(["git", "-C", repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).strip()
+    if head:
+        return head
+    for ref in ("origin/main", "origin/master", "main", "master"):
+        if sh(["git", "-C", repo, "rev-parse", "--verify", "-q", ref]).strip():
+            return ref
+    return ""
+
+
+def scan_worktrees(dev):
+    out = []
+    for repo in repos(dev):
+        trees = [l.split(" ", 1)[1] for l in sh(["git", "-C", repo, "worktree", "list", "--porcelain"]).splitlines()
+                 if l.startswith("worktree ")]
+        base = default_ref(repo)
+        for wt in trees[1:]:
+            if not os.path.isdir(wt):
+                continue
+            dirty = bool(sh(["git", "-C", wt, "status", "--porcelain"]).strip())
+            merged = bool(base) and subprocess.run(["git", "-C", repo, "merge-base", "--is-ancestor",
+                                                    sh(["git", "-C", wt, "rev-parse", "HEAD"]).strip(), base],
+                                                   capture_output=True).returncode == 0
+            branch = sh(["git", "-C", wt, "branch", "--show-current"]).strip() or "detached"
+            safe = merged and not dirty
+            reason = "clean and merged into %s" % base if safe else (
+                "has uncommitted changes" if dirty else "has commits not in %s" % (base or "a default branch"))
+            where = os.path.relpath(wt, dev) if wt.startswith(dev + os.sep) else wt
+            out.append(finding("worktree:%s" % wt, "worktrees", "%s worktree %s [%s]" % (os.path.basename(repo),
+                               where, branch), safe, "safe" if safe else "review", reason,
+                               "git -C %s worktree remove %s%s" % (shlex.quote(repo), "--force " if safe else "",
+                                                                  shlex.quote(wt)), size=du(wt)))
+    return out
+
+
+def scan_node_modules(dev, active_days, skip):
+    out = []
+    if not os.path.isdir(dev):
+        return out
+    for root, dirs, _ in os.walk(dev):
+        depth = root[len(dev):].count(os.sep)
+        if any(root == s or root.startswith(s + os.sep) for s in skip):
+            dirs[:] = []
+            continue
+        if "node_modules" in dirs:
+            nm = os.path.join(root, "node_modules")
+            size = du(nm)
+            days = idle_days(root)
+            if size >= 50 * 1024 ** 2:
+                out.append(finding("node_modules:%s" % nm, "node_modules", "%s (project idle %dd)" % (os.path.relpath(nm, dev), days),
+                                   days >= active_days, "safe", "`pnpm install` / `npm install` restores it",
+                                   "rm -rf %s" % shlex.quote(nm), size=size))
+        dirs[:] = [d for d in dirs if d not in ("node_modules", ".git", ".next", ".venv", "vendor") and depth < 4]
+    return out
+
+
+def scan_big_dirs(dev, skip):
+    out = []
+    if not os.path.isdir(dev):
+        return out
+    for d in sorted(os.listdir(dev)):
+        full = os.path.join(dev, d)
+        if not os.path.isdir(full) or os.path.islink(full) or full in skip:
+            continue
+        size = du(full)
+        if size < 2 * 1024 ** 3:
+            continue
+        days = idle_days(full)
+        note = "git repo" if os.path.isdir(os.path.join(full, ".git")) else "not a git repo, deleting is permanent"
+        out.append(finding("bigdir:%s" % full, "projects", "%s (idle %dd, %s)" % (d, days, note), False, "review",
+                           "large project folder; check for media, builds or data before removing",
+                           "rm -rf %s" % shlex.quote(full), size=size))
+    return out
+
+
+def scan_downloads(days=30):
+    path = os.path.join(HOME, "Downloads")
+    if not os.path.isdir(path):
+        return []
+    old, size = 0, 0
+    for name in os.listdir(path):
+        full = os.path.join(path, name)
+        try:
+            if NOW - os.path.getmtime(full) > days * 86400:
+                old += 1
+                size += du(full)
+        except OSError:
+            pass
+    if size < 200 * 1024 ** 2:
+        return []
+    return [finding("downloads:old", "files", "%d items in ~/Downloads older than %dd" % (old, days), False, "review",
+                    "list them before deleting", "find ~/Downloads -mindepth 1 -maxdepth 1 -mtime +%d" % days, size=size)]
+
+
+def scan_docker():
+    if not shutil.which("docker") or not sh(["docker", "info", "--format", "{{.ID}}"]).strip():
+        return []
+    rows = sh(["docker", "system", "df", "--format", "{{.Type}}\t{{.Reclaimable}}"]).splitlines()
+    text = ", ".join(r.replace("\t", " ") for r in rows)
+    return [finding("docker:prune", "docker", "Docker reclaimable: %s" % text, False, "review",
+                    "removes stopped containers, unused images and build cache", "docker system prune -af")]
+
+
+def keep_path():
+    base = os.environ.get("FLOWKIT_CONFIG_DIR") or os.path.join(HOME, ".config", "flowkit")
+    return os.path.join(base, "lean.json")
+
+
+def load_keep():
+    try:
+        with open(keep_path()) as f:
+            return json.load(f).get("keep", [])
+    except (OSError, ValueError):
+        return []
+
+
+def save_keep(ids):
+    path = keep_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    keep = sorted(set(load_keep()) | set(ids))
+    with open(path, "w") as f:
+        json.dump({"keep": keep}, f, indent=2)
+    return keep
+
+
+def scan(dev, active_days, system=True):
+    results = []
+    if system:
+        results += scan_services() + scan_servers(dev) + scan_ollama()
+    results += scan_caches() + scan_review_dirs() + scan_models()
+    trees = scan_worktrees(dev)
+    results += trees
+    skip = {f["id"].split(":", 1)[1] for f in trees}
+    results += scan_node_modules(dev, active_days, skip)
+    results += scan_big_dirs(dev, skip | {os.path.dirname(t) for t in skip if os.path.dirname(t) != dev})
+    results += scan_downloads()
+    if system:
+        results += scan_docker()
+    keep = set(load_keep())
+    return [r for r in results if r["id"] not in keep]
+
+
+def report(results):
+    if not results:
+        print("Nothing to clean.")
+        return
+    cat = None
+    for r in sorted(results, key=lambda r: (r["category"], -r["size"], -r["ram"])):
+        if r["category"] != cat:
+            cat = r["category"]
+            print("\n== %s ==" % cat)
+        mark = "*" if r["recommend"] else " "
+        weight = human(r["size"]) if r["size"] else ("%dMB RAM" % r["ram"] if r["ram"] else "")
+        print("%s %-9s %-6s %s  -- %s" % (mark, weight, r["risk"], r["label"], r["reason"]))
+    disk = sum(r["size"] for r in results if r["recommend"])
+    ram = sum(r["ram"] for r in results if r["recommend"])
+    print("\n* recommended: frees %s disk, %dMB RAM" % (human(disk), ram))
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="lean", description="Find what is bloating this machine.")
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--dev", default=os.environ.get("LEAN_DEV_DIR") or os.path.join(HOME, "dev"))
+    ap.add_argument("--active-days", type=int, default=14)
+    ap.add_argument("--no-system", action="store_true")
+    ap.add_argument("--keep", nargs="+", metavar="ID")
+    args = ap.parse_args()
+    if args.keep:
+        print("\n".join(save_keep(args.keep)))
+        return 0
+    results = scan(os.path.realpath(args.dev), args.active_days, system=not args.no_system)
+    if args.json:
+        json.dump(results, sys.stdout, indent=2)
+        print()
+    else:
+        report(results)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

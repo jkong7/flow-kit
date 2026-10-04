@@ -171,6 +171,19 @@ The inbox is a plain checklist at `~/.local/share/flowkit/inbox.md` (set `FLOWKI
 
 Capture is instant, and processing happens later with `/triage-inbox`.
 
+## `lean`
+
+```sh
+lean                      # grouped report, * = recommended
+lean --json               # what the lean skill reads
+lean --active-days 30     # node_modules count as idle after 30 days (default 14)
+lean --keep cache:uv      # never suggest this again
+```
+
+Read-only. It finds what is using RAM or disk without earning it: running brew services, dev servers left listening in `~/dev`, caches (npm, uv, Homebrew, go, pnpm, Playwright and more), git worktrees, idle `node_modules`, Hugging Face and Ollama models, large project folders, old Downloads and Docker leftovers. Each finding comes with a size, a risk (`safe` regenerates, `review` is your call) and the exact command that removes it. A worktree is only `safe` when it is clean and already in the default branch.
+
+The `lean` skill runs it, checks what would break, asks what to remove and runs only what you pick. Kept items live in `~/.config/flowkit/lean.json`.
+
 ## `flow`
 
 ```sh
