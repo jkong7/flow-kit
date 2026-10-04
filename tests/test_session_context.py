@@ -19,9 +19,9 @@ class SessionContextTest(unittest.TestCase):
             return None
         return json.loads(p.stdout)["hookSpecificOutput"]["additionalContext"]
 
-    def write(self, name, text):
-        os.makedirs(os.path.join(self.brain, "daily"), exist_ok=True)
-        with open(os.path.join(self.brain, "daily", name), "w") as f:
+    def write(self, name, text, folder="daily"):
+        os.makedirs(os.path.join(self.brain, folder), exist_ok=True)
+        with open(os.path.join(self.brain, folder, name), "w") as f:
             f.write(text)
 
     def test_missing_vault_is_silent(self):
@@ -46,6 +46,20 @@ class SessionContextTest(unittest.TestCase):
         ctx = self.context()
         self.assertIn(self.brain, ctx)
         self.assertNotIn("Latest handoff", ctx)
+
+    def test_profile_is_loaded_before_handoff(self):
+        self.write("profile.md", "# Jonny in one screen\n**Wants to build:** novel consumer AI", folder="me")
+        self.write("2026-10-02.md", "# 2026-10-02\n- BlackRock OA")
+        ctx = self.context()
+        self.assertIn("novel consumer AI", ctx)
+        self.assertLess(ctx.index("novel consumer AI"), ctx.index("BlackRock OA"))
+
+    def test_long_profile_is_capped(self):
+        self.write("profile.md", "\n".join("- trait %d" % i for i in range(2000)), folder="me")
+        self.assertLess(len(self.context()), 3600)
+
+    def test_missing_profile_is_skipped(self):
+        self.assertNotIn("Who Jonny is", self.context())
 
 
 if __name__ == "__main__":
